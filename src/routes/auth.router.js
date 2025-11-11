@@ -1,35 +1,41 @@
 import express from 'express';
-import AuthController from '../controllers/auth.controller.js';
 import authMiddleware from '../middleware/auth.middleware.js';
 
 const auth_router = express.Router();
 
-function ensureHandler(fn, routeDescription) {
-  if (typeof fn !== 'function') {
-    console.error(`Route handler for ${routeDescription} is NOT a function. Value:`, fn);
-    return (req, res) => {
-      res.status(500).json({
-        ok: false,
-        status: 500,
-        message: `Route handler not implemented on server (${routeDescription}). Check controller export.`,
-      });
-    };
-  }
-  return fn;
+function asyncHandler(controllerPath, methodName) {
+  return async (req, res, next) => {
+    try {
+      const module = await import(controllerPath);
+      const Controller = module.default || module;
+      const handler = Controller[methodName];
+      if (typeof handler !== 'function') {
+        console.error(`Handler ${methodName} not found on controller ${controllerPath}. Value:`, handler);
+        return res.status(500).json({
+          ok: false,
+          status: 500,
+          message: `Server configuration error: handler ${methodName} missing on controller.`,
+        });
+      }
+      return handler(req, res, next);
+    } catch (err) {
+      console.error(`Error loading controller ${controllerPath}#${methodName}:`, err && err.stack ? err.stack : err);
+      return res.status(500).json({ ok: false, status: 500, message: "Server error loading handler" });
+    }
+  };
 }
 
 
-auth_router.post('/register', ensureHandler(AuthController.register, 'POST /api/auth/register'));
-auth_router.post('/login', ensureHandler(AuthController.login, 'POST /api/auth/login'));
+auth_router.post('/register', asyncHandler('../controllers/auth.controller.js', 'register'));
+auth_router.post('/login', asyncHandler('../controllers/auth.controller.js', 'login'));
 
+auth_router.get('/verify-email/:verification_token', asyncHandler('../controllers/auth.controller.js', 'verifyEmail'));
 
-auth_router.get('/verify-email/:verification_token', ensureHandler(AuthController.verifyEmail, 'GET /api/auth/verify-email/:verification_token'));
+auth_router.post('/verify-email', asyncHandler('../controllers/auth.controller.js', 'verifyEmailPost'));
 
-auth_router.post('/verify-email', ensureHandler(AuthController.verifyEmailPost, 'POST /api/auth/verify-email'));
+auth_router.post('/forgot-password', asyncHandler('../controllers/auth.controller.js', 'forgotPassword'));
+auth_router.post('/reset-password', asyncHandler('../controllers/auth.controller.js', 'resetPassword'));
 
-auth_router.post('/forgot-password', ensureHandler(AuthController.forgotPassword, 'POST /api/auth/forgot-password'));
-auth_router.post('/reset-password', ensureHandler(AuthController.resetPassword, 'POST /api/auth/reset-password'));
-
-auth_router.get('/me', authMiddleware, ensureHandler(AuthController.me, 'GET /api/auth/me'));
+auth_router.get('/me', authMiddleware, asyncHandler('../controllers/auth.controller.js', 'me'));
 
 export default auth_router;
