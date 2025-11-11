@@ -1,135 +1,112 @@
-import ENVIRONMENT from "../config/environment.config.js";
-import AuthService from "../services/auth.service.js";
+import transporter from "../config/mailer.config.js";
+import UserRepository from "../repositories/user.repository.js";
 import { ServerError } from "../utils/customError.utils.js";
+import jwt from "jsonwebtoken";
+import bcrypt from "bcrypt";
+import ENVIRONMENT from "../config/environment.config.js";
 
-class AuthController {
-  static async register(request, response) {
+class AuthService {
+  static async register(username, password, email) {
+    const user_found = await UserRepository.getByEmail(email);
+    if (user_found) {
+      throw new ServerError(400, "Email ya en uso");
+    }
+
+    const password_hashed = await bcrypt.hash(password, 12);
+    const user_created = await UserRepository.createUser(username, email, password_hashed);
+
+    const verification_token = jwt.sign(
+      {
+        email: email,
+        user_id: user_created._id,
+      },
+      ENVIRONMENT.JWT_SECRET_KEY
+    );
+
+    const backendBase = (ENVIRONMENT.URL_API_BACKEND || "https://tpf-fs-be.vercel.app").replace(/\/$/, "");
+    const verificationLink = `${backendBase}/api/auth/verify-email/${verification_token}`;
+
+    console.log("Verification link (debug):", verificationLink);
+
     try {
-      const { username, email, password } = request.body;
-      if (!username) throw new ServerError(400, "Debes enviar un nombre de usuario valido");
-      if (!email || !String(email).toLowerCase().match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/))
-        throw new ServerError(400, "Debes enviar un email valido");
-      if (!password || password.length < 8) throw new ServerError(400, "Debes enviar una contraseña valida");
-
-      await AuthService.register(username, password, email);
-
-      response.json({
-        ok: true,
-        status: 200,
-        message: "Usuario registrado correctamente",
+      await transporter.sendMail({
+        from: "pruevasdeveloperweb@gmail.com",
+        to: email,
+        subject: "Verificación de correo electrónico",
+        html: `
+          <h1>Verificación de correo</h1>
+          <p>Hola ${username || ""},</p>
+          <p>Haz click en el siguiente enlace para verificar tu cuenta:</p>
+          <p><a href="${verificationLink}">Verificar mi correo</a></p>
+          <p>Si el enlace no funciona, copia y pega esta URL en tu navegador:</p>
+          <pre>${verificationLink}</pre>
+        `,
       });
+      console.log(`Verification email queued for ${email}`);
+    } catch (mailError) {
+      console.error("Error sending verification email:", mailError && mailError.message ? mailError.message : mailError);
+    }
+
+    return { user_created, verificationLink };
+  }
+
+  static async verifyEmail(verification_token) {
+    try {
+      const payload = jwt.verify(verification_token, ENVIRONMENT.JWT_SECRET_KEY);
+      await UserRepository.updateById(payload.user_id, { verified_email: true });
+      return;
     } catch (error) {
-      console.log(error);
-      if (error.status) {
-        return response.status(error.status).json({ ok: false, status: error.status, message: error.message });
+      if (error instanceof jwt.JsonWebTokenError) {
+        throw new ServerError(400, "Token invalido");
       }
-      return response.status(500).json({ ok: false, status: 500, message: "Error interno del servidor" });
+      throw error;
     }
   }
 
-  static async login(request, response) {
-    try {
-      const { email, password } = request.body;
-      const { authorization_token } = await AuthService.login(email, password);
-
-      return response.json({
-        ok: true,
-        message: "Logueado con exito",
-        status: 200,
-        data: {
-          token: authorization_token,
-          authorization_token: authorization_token,
-        },
-      });
-    } catch (error) {
-      console.log(error);
-      if (error.status) {
-        return response.status(error.status).json({ ok: false, status: error.status, message: error.message });
-      }
-      return response.status(500).json({ ok: false, status: 500, message: "Error interno del servidor" });
-    }
+  static async login(email, password) {
+    const user = await UserRepository.getByEmail(email);
+    if (!user) throw new ServerError(404, "Email no registrado");
+    if (user.verified_email === false) throw new ServerError(401, "email no verificado, por favor verifique su email");
+    const is_same_password = await bcrypt.compare(password, user.password);
+    if (!is_same_password) throw new ServerError(401, "Contraseña incorrecta");
+    const authorization_token = jwt.sign(
+      { id: user._id, name: user.name, email: user.email, created_at: user.created_at },
+      ENVIRONMENT.JWT_SECRET_KEY,
+      { expiresIn: "7d" }
+    );
+    return { authorization_token };
   }
 
-
-  static async verifyEmail(request, response) {
-    try {
-      const { verification_token } = request.params;
-      await AuthService.verifyEmail(verification_token);
-
-      const acceptsJson = request.headers.accept && request.headers.accept.includes("application/json");
-      if (acceptsJson) {
-        return response.json({ ok: true, status: 200, message: "Email verificado" });
-      }
-
-      const front = ENVIRONMENT.URL_FRONTEND || "/";
-      return response.redirect(`${front.replace(/\/$/, "")}/login`);
-    } catch (error) {
-      console.log(error);
-      if (error.status) {
-        return response.status(error.status).json({ ok: false, status: error.status, message: error.message });
-      }
-      return response.status(500).json({ ok: false, status: 500, message: "Error interno del servidor" });
-    }
+  static async forgotPassword(email) {
+    const user = await UserRepository.getByEmail(email);
+    if (!user) return;
+    const reset_token = jwt.sign({ email, user_id: user._id, type: "password_reset" }, ENVIRONMENT.JWT_SECRET_KEY, { expiresIn: "1h" });
+    await UserRepository.updateById(user._id, { reset_token, reset_token_expiry: new Date(Date.now() + 3600000) });
+    const resetUrl = `${ENVIRONMENT.URL_API_BACKEND.replace(/\/$/, "")}/reset-password?token=${reset_token}`;
+    await transporter.sendMail({
+      from: "pruevasdeveloperweb@gmail.com",
+      to: email,
+      subject: "Recuperación de contraseña",
+      html: `<p>Restablece tu contraseña: <a href="${resetUrl}">${resetUrl}</a></p>`
+    });
   }
 
-
-  static async verifyEmailPost(request, response) {
+  static async resetPassword(reset_token, new_password) {
     try {
-      const { verification_token } = request.body;
-      if (!verification_token) return response.status(400).json({ ok: false, status: 400, message: "verification_token requerido" });
-      await AuthService.verifyEmail(verification_token);
-      return response.json({ ok: true, status: 200, message: "Email verificado" });
+      const payload = jwt.verify(reset_token, ENVIRONMENT.JWT_SECRET_KEY);
+      if (payload.type !== "password_reset") throw new ServerError(400, "Token inválido");
+      const user = await UserRepository.getById(payload.user_id);
+      if (!user) throw new ServerError(404, "Usuario no encontrado");
+      if (user.reset_token !== reset_token) throw new ServerError(400, "Token inválido");
+      if (user.reset_token_expiry && new Date() > user.reset_token_expiry) throw new ServerError(400, "El token ha expirado");
+      const password_hashed = await bcrypt.hash(new_password, 12);
+      await UserRepository.updateById(user._id, { password: password_hashed, reset_token: null, reset_token_expiry: null, modified_at: new Date() });
+      return;
     } catch (error) {
-      console.log(error);
-      if (error.status) {
-        return response.status(error.status).json({ ok: false, status: error.status, message: error.message });
-      }
-      return response.status(500).json({ ok: false, status: 500, message: "Error interno del servidor" });
-    }
-  }
-
-  static async forgotPassword(request, response) {
-    try {
-      const { email } = request.body;
-      if (!email || !String(email).toLowerCase().match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)) {
-        throw new ServerError(400, "Debes enviar un email válido");
-      }
-      await AuthService.forgotPassword(email);
-      return response.json({ ok: true, status: 200, message: "Se ha enviado un correo con las instrucciones para recuperar tu contraseña" });
-    } catch (error) {
-      console.log(error);
-      if (error.status) {
-        return response.status(error.status).json({ ok: false, status: error.status, message: error.message });
-      }
-      return response.status(500).json({ ok: false, status: 500, message: "Error interno del servidor" });
-    }
-  }
-
-  static async resetPassword(request, response) {
-    try {
-      const { reset_token, new_password } = request.body;
-      if (!reset_token) throw new ServerError(400, "Token de recuperación requerido");
-      if (!new_password || new_password.length < 8) throw new ServerError(400, "La contraseña debe tener al menos 8 caracteres");
-      await AuthService.resetPassword(reset_token, new_password);
-      return response.json({ ok: true, status: 200, message: "Contraseña actualizada correctamente" });
-    } catch (error) {
-      console.log(error);
-      if (error.status) {
-        return response.status(error.status).json({ ok: false, status: error.status, message: error.message });
-      }
-      return response.status(500).json({ ok: false, status: 500, message: "Error interno del servidor" });
-    }
-  }
-
-  static async me(request, response) {
-    try {
-      const u = request.user;
-      return response.json({ ok: true, status: 200, data: { user: u } });
-    } catch (error) {
-      console.log(error);
-      return response.status(500).json({ ok: false, status: 500, message: "Error interno del servidor" });
+      if (error instanceof jwt.JsonWebTokenError) throw new ServerError(400, "Token inválido o expirado");
+      throw error;
     }
   }
 }
 
-export default AuthController
+export default AuthService;
