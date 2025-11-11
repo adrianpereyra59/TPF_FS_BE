@@ -7,40 +7,39 @@ import ENVIRONMENT from "../config/environment.config.js"
 
 class AuthService {
   static async register(username, password, email) {
-    const user_found = await UserRepository.getByEmail(email)
-    if (user_found) {
-      throw new ServerError(400, 'Email ya en uso')
+
+        //Verificar que el usuario no este repido
+        //  - .getByEmail en UserRepository
+
+        const user_found = await UserRepository.getByEmail(email)
+        if (user_found) {
+            throw new ServerError(400, 'Email ya en uso')
+        }
+
+        //Encriptar la contraseña
+        const password_hashed = await bcrypt.hash(password, 12)
+
+        //guardarlo en la DB
+        const user_created = await UserRepository.createUser(username, email, password_hashed)
+        const verification_token = jwt.sign(
+            {
+                email: email,
+                user_id: user_created._id
+            },
+            ENVIRONMENT.JWT_SECRET_KEY
+        )
+        //Enviar un mail de verificacion
+        await transporter.sendMail({
+            from: 'pruevasdeveloperweb@gmail.com',
+            to: email,
+            subject: 'Verificacion de correo electronico',
+            html: `
+            <h1>Hola desde node.js</h1>
+            <p>Este es un mail de verificacion</p>
+            <a href='${ENVIRONMENT.URL_API_BACKEND}/api/auth/verify-email/${verification_token}'>Verificar email</a>
+            `
+        })
     }
-
-    const password_hashed = await bcrypt.hash(password, 12)
-    const user_created = await UserRepository.createUser(username, email, password_hashed)
-
-    const verification_token = jwt.sign(
-      {
-        email: email,
-        user_id: user_created._id
-      },
-      ENVIRONMENT.JWT_SECRET_KEY
-    )
-
-    const frontendBase = (ENVIRONMENT.URL_FRONTEND || ENVIRONMENT.URL_API_BACKEND || "").replace(/\/$/, "")
-    const verificationLink = frontendBase
-      ? `${frontendBase}/verify-email/${verification_token}`
-      : `${(ENVIRONMENT.URL_API_BACKEND || "").replace(/\/$/, "")}/api/auth/verify-email/${verification_token}`
-
-    console.log("Verification link (debug):", verificationLink)
-
-    await transporter.sendMail({
-      from: 'pruevasdeveloperweb@gmail.com',
-      to: email,
-      subject: 'Verificacion de correo electronico',
-      html: `
-        <h1>Hola desde node.js</h1>
-        <p>Este es un mail de verificacion</p>
-        <a href='${verificationLink}'>Verificar email</a>
-      `
-    })
-  }
 
   static async verifyEmail(verification_token){
     try{
