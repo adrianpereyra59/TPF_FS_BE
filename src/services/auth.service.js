@@ -7,20 +7,14 @@ import ENVIRONMENT from "../config/environment.config.js"
 
 class AuthService {
     static async register(username, password, email) {
-
-        //Verificar que el usuario no este repido
-        //  - .getByEmail en UserRepository
-
         const user_found = await UserRepository.getByEmail(email)
         if (user_found) {
             throw new ServerError(400, 'Email ya en uso')
         }
 
-        //Encriptar la contraseña
         const password_hashed = await bcrypt.hash(password, 12)
-
-        //guardarlo en la DB
         const user_created = await UserRepository.createUser(username, email, password_hashed)
+
         const verification_token = jwt.sign(
             {
                 email: email,
@@ -28,15 +22,18 @@ class AuthService {
             },
             ENVIRONMENT.JWT_SECRET_KEY
         )
-        //Enviar un mail de verificacion
+
+        const frontendBase = (ENVIRONMENT.URL_FRONTEND || ENVIRONMENT.URL_API_BACKEND || "").replace(/\/$/, "");
+        const verificationLink = frontendBase ? `${frontendBase}/verify-email/${verification_token}` : `${ENVIRONMENT.URL_API_BACKEND}/api/auth/verify-email/${verification_token}`;
+
         await transporter.sendMail({
             from: 'pruevasdeveloperweb@gmail.com',
             to: email,
             subject: 'Verificacion de correo electronico',
             html: `
-            <h1>Hola desde node.js</h1>
-            <p>Este es un mail de verificacion</p>
-            <a href='${ENVIRONMENT.URL_API_BACKEND}/api/auth/verify-email/${verification_token}'>Verificar email</a>
+                <h1>Hola desde node.js</h1>
+                <p>Este es un mail de verificacion</p>
+                <a href='${verificationLink}'>Verificar email</a>
             `
         })
     }
@@ -64,15 +61,6 @@ class AuthService {
     }
 
     static async login(email, password){
-        /* 
-        - Buscar por email y guardar en una variable
-            - No se encontro: Tiramos error 404 'Email no registrado' / 'El email o la contraseña son invalidos'
-        - Usamos bcrypt.compare para checkear que la password recibida sea igual al hash guardado en DB
-            - En caso de que no sean iguales: 401 (Unauthorized) 'Contraseña invalida' / 'El email o la contraseña son invalidos'
-        - Generar el authorization_token con los datos que coinsideremos importantes para una sesion: (name, email, rol, created_at) (NO PASAR DATOS SENSIBLES)
-        - Retornar el token
-        */
-
         const user = await UserRepository.getByEmail(email)
         if(!user){
             throw new ServerError(404, 'Email no registrado')
@@ -85,7 +73,6 @@ class AuthService {
             )
         }
 
-        /* Permite saber si cierto valor es igual a otro cierto valor encriptado */
         const is_same_password = await bcrypt.compare(password, user.password)
         if(!is_same_password){
             throw new ServerError(401, 'Contraseña incorrecta')
@@ -106,99 +93,89 @@ class AuthService {
         return {
             authorization_token
         }
-
     }
+
     static async forgotPassword(email) {
-    // Buscar usuario por email
-    const user = await UserRepository.getByEmail(email)
-    
-    if (!user) {
-        // Por seguridad, no revelamos si el email existe o no
-        return
-    }
-    
-    // Generar token de recuperación (válido por 1 hora)
-    const reset_token = jwt.sign(
-        {
-            email: email,
-            user_id: user._id,
-            type: 'password_reset'
-        },
-        ENVIRONMENT.JWT_SECRET_KEY,
-        {
-            expiresIn: '1h'
-        }
-    )
-    
-    // Guardar token en la base de datos
-    await UserRepository.updateById(user._id, {
-        reset_token: reset_token,
-        reset_token_expiry: new Date(Date.now() + 3600000) // 1 hora
-    })
-    
-    // Enviar email con el link de recuperación
-    const resetUrl = `${ENVIRONMENT.URL_API_BACKEND}/reset-password?token=${reset_token}`
-    
-    await transporter.sendMail({
-        from: 'pruevasdeveloperweb@gmail.com',
-        to: email,
-        subject: 'Recuperación de contraseña',
-        html: `
-            <h1>Recuperación de contraseña</h1>
-            <p>Has solicitado recuperar tu contraseña.</p>
-            <p>Haz clic en el siguiente enlace para restablecer tu contraseña:</p>
-            <a href="${resetUrl}">Restablecer contraseña</a>
-            <p>Este enlace expirará en 1 hora.</p>
-            <p>Si no solicitaste este cambio, ignora este correo.</p>
-        `
-    })
-}
-
-static async resetPassword(reset_token, new_password) {
-    try {
-        // Verificar el token
-        const payload = jwt.verify(reset_token, ENVIRONMENT.JWT_SECRET_KEY)
-        
-        if (payload.type !== 'password_reset') {
-            throw new ServerError(400, 'Token inválido')
-        }
-        
-        // Buscar usuario
-        const user = await UserRepository.getById(payload.user_id)
+        const user = await UserRepository.getByEmail(email)
         
         if (!user) {
-            throw new ServerError(404, 'Usuario no encontrado')
+            return
         }
         
-        // Verificar que el token coincida y no haya expirado
-        if (user.reset_token !== reset_token) {
-            throw new ServerError(400, 'Token inválido')
-        }
+        const reset_token = jwt.sign(
+            {
+                email: email,
+                user_id: user._id,
+                type: 'password_reset'
+            },
+            ENVIRONMENT.JWT_SECRET_KEY,
+            {
+                expiresIn: '1h'
+            }
+        )
         
-        if (user.reset_token_expiry && new Date() > user.reset_token_expiry) {
-            throw new ServerError(400, 'El token ha expirado')
-        }
-        
-        // Encriptar nueva contraseña
-        const password_hashed = await bcrypt.hash(new_password, 12)
-        
-        // Actualizar contraseña y limpiar tokens
         await UserRepository.updateById(user._id, {
-            password: password_hashed,
-            reset_token: null,
-            reset_token_expiry: null,
-            modified_at: new Date()
+            reset_token: reset_token,
+            reset_token_expiry: new Date(Date.now() + 3600000)
         })
         
-        return
+        const resetUrl = `${ENVIRONMENT.URL_API_BACKEND}/reset-password?token=${reset_token}`
+        
+        await transporter.sendMail({
+            from: 'pruevasdeveloperweb@gmail.com',
+            to: email,
+            subject: 'Recuperación de contraseña',
+            html: `
+                <h1>Recuperación de contraseña</h1>
+                <p>Has solicitado recuperar tu contraseña.</p>
+                <p>Haz clic en el siguiente enlace para restablecer tu contraseña:</p>
+                <a href="${resetUrl}">Restablecer contraseña</a>
+                <p>Este enlace expirará en 1 hora.</p>
+                <p>Si no solicitaste este cambio, ignora este correo.</p>
+            `
+        })
     }
-    catch (error) {
-        if (error instanceof jwt.JsonWebTokenError) {
-            throw new ServerError(400, 'Token inválido o expirado')
+
+    static async resetPassword(reset_token, new_password) {
+        try {
+            const payload = jwt.verify(reset_token, ENVIRONMENT.JWT_SECRET_KEY)
+            
+            if (payload.type !== 'password_reset') {
+                throw new ServerError(400, 'Token inválido')
+            }
+            
+            const user = await UserRepository.getById(payload.user_id)
+            
+            if (!user) {
+                throw new ServerError(404, 'Usuario no encontrado')
+            }
+            
+            if (user.reset_token !== reset_token) {
+                throw new ServerError(400, 'Token inválido')
+            }
+            
+            if (user.reset_token_expiry && new Date() > user.reset_token_expiry) {
+                throw new ServerError(400, 'El token ha expirado')
+            }
+            
+            const password_hashed = await bcrypt.hash(new_password, 12)
+            
+            await UserRepository.updateById(user._id, {
+                password: password_hashed,
+                reset_token: null,
+                reset_token_expiry: null,
+                modified_at: new Date()
+            })
+            
+            return
         }
-        throw error
+        catch (error) {
+            if (error instanceof jwt.JsonWebTokenError) {
+                throw new ServerError(400, 'Token inválido o expirado')
+            }
+            throw error
+        }
     }
-}
 }
 
-export default AuthService
+export default AuthService;

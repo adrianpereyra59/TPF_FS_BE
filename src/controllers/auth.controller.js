@@ -50,11 +50,37 @@ class AuthController {
     }
   }
 
+
   static async verifyEmail(request, response) {
     try {
       const { verification_token } = request.params;
       await AuthService.verifyEmail(verification_token);
-      return response.redirect(ENVIRONMENT.URL_FRONTEND + "/login");
+
+      const acceptsJson = request.headers.accept && request.headers.accept.includes("application/json");
+      if (acceptsJson) {
+        return response.json({ ok: true, status: 200, message: "Email verificado" });
+      }
+
+      const front = ENVIRONMENT.URL_FRONTEND || "/";
+      return response.redirect(`${front.replace(/\/$/, "")}/login`);
+    } catch (error) {
+      console.log(error);
+      if (error.status) {
+        return response.status(error.status).json({ ok: false, status: error.status, message: error.message });
+      }
+      return response.status(500).json({ ok: false, status: 500, message: "Error interno del servidor" });
+    }
+  }
+
+  
+  static async verifyEmailPost(request, response) {
+    try {
+      const { verification_token } = request.body;
+      if (!verification_token) {
+        return response.status(400).json({ ok: false, status: 400, message: "verification_token requerido" });
+      }
+      await AuthService.verifyEmail(verification_token);
+      return response.json({ ok: true, status: 200, message: "Email verificado" });
     } catch (error) {
       console.log(error);
       if (error.status) {
