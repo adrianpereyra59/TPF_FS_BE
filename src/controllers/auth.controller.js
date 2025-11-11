@@ -72,13 +72,11 @@ class AuthController {
     }
   }
 
-  
+
   static async verifyEmailPost(request, response) {
     try {
       const { verification_token } = request.body;
-      if (!verification_token) {
-        return response.status(400).json({ ok: false, status: 400, message: "verification_token requerido" });
-      }
+      if (!verification_token) return response.status(400).json({ ok: false, status: 400, message: "verification_token requerido" });
       await AuthService.verifyEmail(verification_token);
       return response.json({ ok: true, status: 200, message: "Email verificado" });
     } catch (error) {
@@ -125,7 +123,7 @@ class AuthController {
 
   static async me(request, response) {
     try {
-      const u = request.user; 
+      const u = request.user;
       return response.json({ ok: true, status: 200, data: { user: u } });
     } catch (error) {
       console.log(error);
@@ -134,4 +132,4 @@ class AuthController {
   }
 }
 
-export default AuthController;
+export default AuthController
